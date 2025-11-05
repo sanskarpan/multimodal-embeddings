@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  weaviate:
+    image: semitechnologies/weaviate:1.27.3
+    container_name: weaviate
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      # Query and indexing defaults
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      
+      # Cluster configuration
+      CLUSTER_HOSTNAME: 'node1'
+      
+      # Vectorizer modules - OpenAI for multimodal support
+      ENABLE_MODULES: 'multi2vec-clip,text2vec-openai,generative-openai'
+      
+      # OpenAI API configuration
+      OPENAI_APIKEY: ${OPENAI_API_KEY}
+      
+      # CLIP model configuration (for multimodal - image + text)
+      CLIP_INFERENCE_API: 'http://multi2vec-clip:8080'
+      
+      # Default vectorizer
+      DEFAULT_VECTORIZER_MODULE: 'multi2vec-clip'
+      
+      # Authorization
+      AUTHORIZATION_ADMINLIST_ENABLED: 'false'
+      AUTHORIZATION_ADMINLIST_USERS: ''
+      
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    networks:
+      - weaviate-network
+
+  # CLIP service for multimodal embeddings (images + text)
+  multi2vec-clip:
+    image: semitechnologies/multi2vec-clip:sentence-transformers-clip-ViT-B-32-multilingual-v1
+    container_name: multi2vec-clip
+    restart: unless-stopped
+    environment:
+      ENABLE_CUDA: '0'
+    networks:
+      - weaviate-network
+
+networks:
+  weaviate-network:
+    driver: bridge
+
+volumes:
+  weaviate_data:
+    driver: local
+
+
