@@ -1,0 +1,51 @@
+id,category,description,image_path,filename
+0,animals,Black lion running in the forest,synthetic_data/image_0000.png,image_0000.png
+1,animals,A golden lion eating in nature,synthetic_data/image_0001.png,image_0001.png
+2,animals,Stunning gray dog in a field playing,synthetic_data/image_0002.png,image_0002.png
+3,animals,Amazing bird in orange color playing in the zoo,synthetic_data/image_0003.png,image_0003.png
+4,animals,A brown cat jumping in a field,synthetic_data/image_0004.png,image_0004.png
+5,animals,Stunning gray cat in a park sitting,synthetic_data/image_0005.png,image_0005.png
+6,animals,Beautiful black elephant eating in a field,synthetic_data/image_0006.png,image_0006.png
+7,animals,Amazing lion in gray color eating in the forest,synthetic_data/image_0007.png,image_0007.png
+8,animals,Beautiful orange dog eating in nature,synthetic_data/image_0008.png,image_0008.png
+9,animals,Golden dog running in a field,synthetic_data/image_0009.png,image_0009.png
+10,vehicles,Amazing truck in silver color racing on the road,synthetic_data/image_0010.png,image_0010.png
+11,vehicles,A white truck racing in traffic,synthetic_data/image_0011.png,image_0011.png
+12,vehicles,Beautiful red bicycle driving in the city,synthetic_data/image_0012.png,image_0012.png
+13,vehicles,Stunning black car in a parking lot racing,synthetic_data/image_0013.png,image_0013.png
+14,vehicles,Stunning silver motorcycle on the street driving,synthetic_data/image_0014.png,image_0014.png
+15,vehicles,Beautiful green car racing on the road,synthetic_data/image_0015.png,image_0015.png
+16,vehicles,Stunning silver motorcycle on the road stationary,synthetic_data/image_0016.png,image_0016.png
+17,vehicles,Stunning white motorcycle in traffic stationary,synthetic_data/image_0017.png,image_0017.png
+18,vehicles,Stunning white bus in the city moving,synthetic_data/image_0018.png,image_0018.png
+19,vehicles,Beautiful silver car racing in the city,synthetic_data/image_0019.png,image_0019.png
+20,nature,Beautiful red sunset serene view,synthetic_data/image_0020.png,image_0020.png
+21,nature,Golden mountain beautiful landscape,synthetic_data/image_0021.png,image_0021.png
+22,nature,Stunning red ocean landscape beautiful,synthetic_data/image_0022.png,image_0022.png
+23,nature,Stunning blue waterfall landscape beautiful,synthetic_data/image_0023.png,image_0023.png
+24,nature,Blue lake beautiful landscape,synthetic_data/image_0024.png,image_0024.png
+25,nature,Amazing ocean in purple color serene panorama,synthetic_data/image_0025.png,image_0025.png
+26,nature,Golden sunset beautiful view,synthetic_data/image_0026.png,image_0026.png
+27,nature,Stunning red ocean view serene,synthetic_data/image_0027.png,image_0027.png
+28,nature,Amazing sunset in blue color scenic view,synthetic_data/image_0028.png,image_0028.png
+29,nature,Beautiful purple mountain serene scenery,synthetic_data/image_0029.png,image_0029.png
+30,food,Amazing pasta in yellow color prepared on a plate,synthetic_data/image_0030.png,image_0030.png
+31,food,Stunning white burger in a bowl prepared,synthetic_data/image_0031.png,image_0031.png
+32,food,Stunning yellow sandwich gourmet hot,synthetic_data/image_0032.png,image_0032.png
+33,food,Stunning yellow burger in a restaurant served,synthetic_data/image_0033.png,image_0033.png
+34,food,Beautiful golden sushi served on a plate,synthetic_data/image_0034.png,image_0034.png
+35,food,A yellow pasta hot homemade,synthetic_data/image_0035.png,image_0035.png
+36,food,Yellow burger delicious in a restaurant,synthetic_data/image_0036.png,image_0036.png
+37,food,Beautiful white pizza cold on a plate,synthetic_data/image_0037.png,image_0037.png
+38,food,Beautiful green pizza delicious homemade,synthetic_data/image_0038.png,image_0038.png
+39,food,Stunning white sushi gourmet prepared,synthetic_data/image_0039.png,image_0039.png
+40,architecture,A brown bridge historic in the city,synthetic_data/image_0040.png,image_0040.png
+41,architecture,Beautiful white building beautiful urban,synthetic_data/image_0041.png,image_0041.png
+42,architecture,Beautiful white tower modern downtown,synthetic_data/image_0042.png,image_0042.png
+43,architecture,Stunning white tower in the city impressive,synthetic_data/image_0043.png,image_0043.png
+44,architecture,White skyscraper tall structure,synthetic_data/image_0044.png,image_0044.png
+45,architecture,A gray building impressive landmark,synthetic_data/image_0045.png,image_0045.png
+46,architecture,A gray cathedral impressive in the city,synthetic_data/image_0046.png,image_0046.png
+47,architecture,Amazing building in gray color modern landmark,synthetic_data/image_0047.png,image_0047.png
+48,architecture,Amazing skyscraper in blue color modern structure,synthetic_data/image_0048.png,image_0048.png
+49,architecture,Amazing skyscraper in blue color beautiful urban,synthetic_data/image_0049.png,image_0049.png
