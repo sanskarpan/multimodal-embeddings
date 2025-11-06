@@ -1,0 +1,101 @@
+================================================================================
+QUICK TEST STEPS - Real Multimodal Benchmark (With Actual Images)
+================================================================================
+
+IMPORTANT: The previous benchmark was FAKE - it only compared text to text!
+This new version uses REAL IMAGES for proper multimodal testing.
+
+COST: ~$0.01 for 50 products, ~$0.17 for all 752 products
+
+
+STEP 1: Start Weaviate
+────────────────────────────────────────────────────────────────────────────
+cd /Users/sanskar/dev/Camarin/Vectorizer
+./setup_weaviate.sh start
+# Wait 30 seconds for it to be ready
+
+
+STEP 2: Activate Python Environment
+────────────────────────────────────────────────────────────────────────────
+source venv/bin/activate
+
+
+STEP 3: Test with 50 Products First (Recommended)
+────────────────────────────────────────────────────────────────────────────
+
+# A) Download 50 product images (~30 seconds)
+python download_images.py --sample 50
+
+# B) Load CLIP collection with real images (FREE, ~2 min)
+python load_clip_collection_v2.py --sample 50 --skip-download
+
+# C) Load OpenAI collection with AI vision (~$0.01, ~3 min)
+python load_openai_collection_v2.py --sample 50 --skip-download
+
+# D) Run benchmark comparison
+python benchmark_real_multimodal.py --k 5
+
+
+STEP 4 (Optional): Full Dataset Test
+────────────────────────────────────────────────────────────────────────────
+Only run after testing with 50 products first!
+Cost: ~$0.17 for 752 products
+
+# A) Download all images (~5 min)
+python download_images.py
+
+# B) Load CLIP (FREE, ~10 min)
+python load_clip_collection_v2.py --skip-download
+
+# C) Load OpenAI (~$0.15, ~20 min)
+python load_openai_collection_v2.py --skip-download
+
+# D) Run benchmark
+python benchmark_real_multimodal.py --k 5
+
+
+WHAT'S DIFFERENT NOW?
+────────────────────────────────────────────────────────────────────────────
+OLD (wrong):
+  ✗ CLIP: Only used text fields (title, description)
+  ✗ OpenAI: Only used text fields  
+  ✗ Both were text-to-text comparison
+  ✗ 99% accuracy was fake/misleading
+
+NEW (correct):
+  ✓ CLIP: Downloads images, converts to base64, vectorizes pixels
+  ✓ OpenAI: Uses GPT-4o-mini vision to analyze images
+  ✓ Both use REAL image understanding
+  ✓ Results will be more realistic (50-80% accuracy expected)
+
+
+COLLECTIONS CREATED:
+────────────────────────────────────────────────────────────────────────────
+MyrityProducts_CLIP_Real   - CLIP with actual images
+MyrityProducts_OpenAI_Real - OpenAI with AI vision analysis
+
+
+RESULTS SAVED TO:
+────────────────────────────────────────────────────────────────────────────
+benchmark_real_results.json - Raw metrics data
+image_cache/                - Downloaded product images
+
+
+TROUBLESHOOTING:
+────────────────────────────────────────────────────────────────────────────
+Problem: "Collection not found"
+Fix: Run the loader scripts first (step 3B and 3C)
+
+Problem: "No images available"
+Fix: Remove --skip-download flag or run download_images.py
+
+Problem: "Weaviate not ready"
+Fix: ./setup_weaviate.sh restart
+
+Problem: Too expensive
+Fix: Always use --sample 50 for testing!
+
+
+For detailed guide, see: REAL_BENCHMARK_GUIDE.md
+
+

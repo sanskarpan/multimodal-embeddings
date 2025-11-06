@@ -5,3 +5,5 @@ venv/
 *.pyd
 *.pyw
 *.pyz
+image_cache/
+reference/

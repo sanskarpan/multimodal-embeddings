@@ -1,18 +1,18 @@
 # Quick Start Guide
 
-## Get Started in 3 Steps
+## 🎯 Get Started in 3 Steps
 
-### 1 Start Weaviate
+### 1️⃣ Start Weaviate
 ```bash
 ./setup_weaviate.sh start
 ```
 
-### 2 Activate Python Environment
+### 2️⃣ Activate Python Environment
 ```bash
 source venv/bin/activate
 ```
 
-### 3 Run Example or Tests
+### 3️⃣ Run Example or Tests
 ```bash
 # Run the example script
 python example_usage.py

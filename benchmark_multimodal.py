@@ -1,579 +1,424 @@
 #!/usr/bin/env python3
 """
-Benchmark multimodal embeddings: CLIP vs OpenAI
-Evaluates performance using Precision@K, Recall@K, mAP, Hit Rate@K
+Benchmark script for comparing CLIP vs OpenAI multimodal retrieval
+Implements metrics from cross_retrieval_analysis.py:
+- Precision@K
+- Recall@K
+- Mean Average Precision (mAP)
+- Hit Rate@K
 """
 
 import os
 import sys
-import csv
-import time
 import json
-import base64
-from typing import List, Dict, Tuple, Optional
-from pathlib import Path
-import numpy as np
+import time
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Set, Tuple
 import weaviate
-from weaviate.classes.config import Configure, Property, DataType
-from weaviate.classes.query import MetadataQuery
+from weaviate.classes.query import Filter, MetadataQuery
 from dotenv import load_dotenv
 from tqdm import tqdm
 
 load_dotenv()
 
-# Color codes
-class Colors:
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    MAGENTA = '\033[95m'
-    END = '\033[0m'
-    BOLD = '\033[1m'
-
-def print_header(msg: str):
-    print(f"\n{Colors.BOLD}{Colors.CYAN}{'='*70}{Colors.END}")
-    print(f"{Colors.BOLD}{Colors.CYAN}{msg}{Colors.END}")
-    print(f"{Colors.BOLD}{Colors.CYAN}{'='*70}{Colors.END}\n")
-
-def print_success(msg: str):
-    print(f"{Colors.GREEN}✓{Colors.END} {msg}")
-
-def print_info(msg: str):
-    print(f"{Colors.BLUE}ℹ{Colors.END} {msg}")
-
-def print_warning(msg: str):
-    print(f"{Colors.YELLOW}⚠{Colors.END} {msg}")
-
-def print_error(msg: str):
-    print(f"{Colors.RED}✗{Colors.END} {msg}")
+TOP_K = 5  # Number of results to retrieve
 
 
-class MultimodalBenchmark:
-    """Benchmark multimodal embeddings"""
+@dataclass(frozen=True)
+class Item:
+    """Represents a product item (text or image)"""
+    uuid: str
+    handle: str
+    modality: Optional[str]
+    title: Optional[str]
+    description: Optional[str]
+    image_url: Optional[str]
+    caption: Optional[str]
+
+
+@dataclass(frozen=True)
+class MetricsResult:
+    """Evaluation metrics"""
+    precision_at_k: float
+    recall_at_k: float
+    mean_avg_precision: float
+    hit_rate_at_k: float
+    num_queries: int
+    avg_query_time_ms: float
+
+
+def load_all_items(client: weaviate.WeaviateClient, collection_name: str) -> List[Item]:
+    """Load all items from a collection"""
+    collection = client.collections.get(collection_name)
+    items: List[Item] = []
     
-    def __init__(self, weaviate_url="http://localhost:8080"):
-        self.weaviate_url = weaviate_url
-        self.client: Optional[weaviate.WeaviateClient] = None
-        self.dataset = []
-        self.ground_truth_queries = []
-        
-    def connect(self):
-        """Connect to Weaviate"""
-        print_info(f"Connecting to Weaviate at {self.weaviate_url}...")
-        
-        self.client = weaviate.connect_to_local(
-            host="localhost",
-            port=8080,
-            grpc_port=50051,
-            headers={
-                "X-OpenAI-Api-Key": os.getenv("OPENAI_API_KEY")
-            }
-        )
-        
-        if self.client.is_ready():
-            print_success("Connected to Weaviate")
-        else:
-            print_error("Failed to connect to Weaviate")
-            sys.exit(1)
+    ret_props = ["handle", "modality", "title", "description", "image_url", "caption"]
     
-    def load_dataset(self, csv_path: str):
-        """Load dataset from CSV"""
-        print_info(f"Loading dataset from {csv_path}...")
-        
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            self.dataset = list(reader)
-        
-        # Load base64 encoded images
-        for item in self.dataset:
-            image_path = item['image_path']
-            if os.path.exists(image_path):
-                with open(image_path, 'rb') as img_file:
-                    item['image_base64'] = base64.b64encode(img_file.read()).decode()
-            else:
-                print_warning(f"Image not found: {image_path}")
-                item['image_base64'] = None
-        
-        print_success(f"Loaded {len(self.dataset)} items from dataset")
-        
-        # Print dataset statistics
-        categories = {}
-        for item in self.dataset:
-            cat = item.get('category', 'unknown')
-            categories[cat] = categories.get(cat, 0) + 1
-        
-        print_info("Dataset distribution:")
-        for cat, count in categories.items():
-            print(f"  • {cat}: {count} items")
+    for obj in collection.iterator(return_properties=ret_props):
+        props = obj.properties or {}
+        items.append(Item(
+            uuid=str(obj.uuid),
+            handle=props.get("handle", ""),
+            modality=props.get("modality"),
+            title=props.get("title"),
+            description=props.get("description"),
+            image_url=props.get("image_url"),
+            caption=props.get("caption")
+        ))
     
-    def load_ground_truth(self, queries_path: str):
-        """Load ground truth queries"""
-        print_info(f"Loading ground truth from {queries_path}...")
-        
-        with open(queries_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                # Parse relevant_ids
-                relevant_ids = [int(x.strip()) for x in row['relevant_ids'].split(',') if x.strip()]
-                
-                self.ground_truth_queries.append({
-                    'query_id': row['query_id'],
-                    'query_text': row['query_text'],
-                    'query_category': row['query_category'],
-                    'relevant_ids': relevant_ids,
-                    'total_relevant': int(row['total_relevant'])
-                })
-        
-        print_success(f"Loaded {len(self.ground_truth_queries)} ground truth queries")
+    return items
+
+
+def near_modality(client: weaviate.WeaviateClient, collection_name: str, 
+                 source_uuid: str, target_modality: str, limit: int = TOP_K) -> Tuple[List[str], float]:
+    """
+    Retrieve items of target_modality similar to source item
+    Returns: (list of UUIDs, query time in ms)
+    """
+    collection = client.collections.get(collection_name)
     
-    def create_collection_clip(self, collection_name="MultimodalCLIP"):
-        """Create collection with CLIP embeddings"""
-        print_info(f"Creating CLIP collection: {collection_name}")
-        
-        # Delete if exists
-        if self.client.collections.exists(collection_name):
-            self.client.collections.delete(collection_name)
-            print_info(f"Deleted existing collection: {collection_name}")
-        
-        # Create collection
-        collection = self.client.collections.create(
-            name=collection_name,
-            vectorizer_config=Configure.Vectorizer.multi2vec_clip(
-                text_fields=["description"],
-                image_fields=["image"]
-            ),
-            properties=[
-                Property(name="item_id", data_type=DataType.INT),
-                Property(name="description", data_type=DataType.TEXT),
-                Property(name="category", data_type=DataType.TEXT),
-                Property(name="image", data_type=DataType.BLOB),
-                Property(name="filename", data_type=DataType.TEXT),
-            ]
-        )
-        
-        print_success(f"Created CLIP collection: {collection_name}")
-        return collection
+    start_time = time.time()
+    response = collection.query.near_object(
+        near_object=source_uuid,
+        limit=limit,
+        filters=Filter.by_property("modality").equal(target_modality),
+        return_metadata=MetadataQuery(distance=True)
+    )
+    query_time = (time.time() - start_time) * 1000  # Convert to milliseconds
     
-    def create_collection_openai(self, collection_name="MultimodalOpenAI"):
-        """Create collection with OpenAI text embeddings"""
-        print_info(f"Creating OpenAI collection: {collection_name}")
-        
-        # Note: OpenAI doesn't have native multimodal embeddings yet like CLIP
-        # We'll use text embeddings on the descriptions
-        # For true multimodal with OpenAI, you'd need to use GPT-4V to generate
-        # descriptions and then embed those, or wait for multimodal embedding API
-        
-        # Delete if exists
-        if self.client.collections.exists(collection_name):
-            self.client.collections.delete(collection_name)
-            print_info(f"Deleted existing collection: {collection_name}")
-        
-        # Create collection
-        collection = self.client.collections.create(
-            name=collection_name,
-            vectorizer_config=Configure.Vectorizer.text2vec_openai(
-                model="text-embedding-3-small"
-            ),
-            properties=[
-                Property(name="item_id", data_type=DataType.INT),
-                Property(name="description", data_type=DataType.TEXT),
-                Property(name="category", data_type=DataType.TEXT),
-                Property(name="filename", data_type=DataType.TEXT),
-            ]
-        )
-        
-        print_success(f"Created OpenAI collection: {collection_name}")
-        return collection
+    retrieved_uuids = [str(obj.uuid) for obj in response.objects]
+    return retrieved_uuids, query_time
+
+
+def calculate_precision_at_k(relevant_items: Set[str], retrieved_items: List[str], k: int) -> float:
+    """Calculate Precision@K: fraction of retrieved items that are relevant"""
+    if k == 0 or not retrieved_items:
+        return 0.0
+    retrieved_k = retrieved_items[:k]
+    relevant_count = sum(1 for item in retrieved_k if item in relevant_items)
+    return relevant_count / len(retrieved_k)
+
+
+def calculate_recall_at_k(relevant_items: Set[str], retrieved_items: List[str], k: int) -> float:
+    """Calculate Recall@K: fraction of relevant items that are retrieved"""
+    if not relevant_items:
+        return 0.0
+    if k == 0 or not retrieved_items:
+        return 0.0
+    retrieved_k = retrieved_items[:k]
+    relevant_count = sum(1 for item in retrieved_k if item in relevant_items)
+    return relevant_count / len(relevant_items)
+
+
+def calculate_average_precision(relevant_items: Set[str], retrieved_items: List[str]) -> float:
+    """Calculate Average Precision for a single query"""
+    if not relevant_items or not retrieved_items:
+        return 0.0
     
-    def insert_data_clip(self, collection_name="MultimodalCLIP"):
-        """Insert data into CLIP collection"""
-        print_info(f"Inserting {len(self.dataset)} items into {collection_name}...")
-        
-        collection = self.client.collections.get(collection_name)
-        
-        inserted = 0
-        failed = 0
-        
-        with collection.batch.dynamic() as batch:
-            for item in tqdm(self.dataset, desc="Inserting CLIP data"):
-                try:
-                    if item.get('image_base64'):
-                        batch.add_object(
-                            properties={
-                                "item_id": int(item['id']),
-                                "description": item['description'],
-                                "category": item['category'],
-                                "image": item['image_base64'],
-                                "filename": item['filename'],
-                            }
-                        )
-                        inserted += 1
-                    else:
-                        failed += 1
-                except Exception as e:
-                    print_warning(f"Failed to insert item {item.get('id')}: {e}")
-                    failed += 1
-        
-        print_success(f"Inserted {inserted} items into {collection_name}")
-        if failed > 0:
-            print_warning(f"Failed to insert {failed} items")
-        
-        # Verify count
-        response = collection.aggregate.over_all(total_count=True)
-        print_info(f"Total items in {collection_name}: {response.total_count}")
+    score: float = 0.0
+    num_relevant: int = 0
     
-    def insert_data_openai(self, collection_name="MultimodalOpenAI"):
-        """Insert data into OpenAI collection"""
-        print_info(f"Inserting {len(self.dataset)} items into {collection_name}...")
-        
-        collection = self.client.collections.get(collection_name)
-        
-        inserted = 0
-        failed = 0
-        
-        with collection.batch.dynamic() as batch:
-            for item in tqdm(self.dataset, desc="Inserting OpenAI data"):
-                try:
-                    batch.add_object(
-                        properties={
-                            "item_id": int(item['id']),
-                            "description": item['description'],
-                            "category": item['category'],
-                            "filename": item['filename'],
-                        }
-                    )
-                    inserted += 1
-                except Exception as e:
-                    print_warning(f"Failed to insert item {item.get('id')}: {e}")
-                    failed += 1
-        
-        print_success(f"Inserted {inserted} items into {collection_name}")
-        if failed > 0:
-            print_warning(f"Failed to insert {failed} items")
-        
-        # Verify count
-        response = collection.aggregate.over_all(total_count=True)
-        print_info(f"Total items in {collection_name}: {response.total_count}")
+    for i, item in enumerate(retrieved_items):
+        if item in relevant_items:
+            num_relevant += 1
+            precision_at_i = num_relevant / (i + 1)
+            score += precision_at_i
     
-    def search_and_evaluate(self, collection_name: str, k_values=[1, 3, 5, 10]):
-        """Search and evaluate using ground truth queries"""
-        print_header(f"Evaluating {collection_name}")
+    return score / len(relevant_items) if relevant_items else 0.0
+
+
+def calculate_hit_at_k(relevant_items: Set[str], retrieved_items: List[str], k: int) -> float:
+    """Calculate Hit@K: 1 if at least one relevant item in top K, 0 otherwise"""
+    if k == 0 or not retrieved_items:
+        return 0.0
+    retrieved_k = retrieved_items[:k]
+    return 1.0 if any(item in relevant_items for item in retrieved_k) else 0.0
+
+
+def evaluate_retrieval(queries: List[Item], target_items: List[Item], 
+                       client: weaviate.WeaviateClient, collection_name: str,
+                       target_modality: str, k: int = TOP_K) -> MetricsResult:
+    """Evaluate cross-modal retrieval performance"""
+    
+    # Build mapping from handle to target items
+    handle_to_targets: Dict[str, List[str]] = {}
+    for item in target_items:
+        if item.handle:
+            if item.handle not in handle_to_targets:
+                handle_to_targets[item.handle] = []
+            handle_to_targets[item.handle].append(item.uuid)
+    
+    precisions: List[float] = []
+    recalls: List[float] = []
+    avg_precisions: List[float] = []
+    hits: List[float] = []
+    query_times: List[float] = []
+    
+    for query in tqdm(queries, desc=f"Evaluating {target_modality}"):
+        # Get ground truth relevant items (same handle)
+        relevant_handles = {query.handle} if query.handle else set()
+        relevant_uuids: Set[str] = set()
+        for h in relevant_handles:
+            if h in handle_to_targets:
+                relevant_uuids.update(handle_to_targets[h])
         
-        collection = self.client.collections.get(collection_name)
+        if not relevant_uuids:
+            continue
         
-        all_results = []
-        query_times = []
-        
-        for query in tqdm(self.ground_truth_queries, desc=f"Running queries on {collection_name}"):
-            start_time = time.time()
-            
-            # Search with max K
-            max_k = max(k_values)
-            try:
-                response = collection.query.near_text(
-                    query=query['query_text'],
-                    limit=max_k,
-                    return_metadata=MetadataQuery(distance=True)
-                )
-                
-                query_time = time.time() - start_time
-                query_times.append(query_time)
-                
-                # Extract retrieved item IDs
-                retrieved_ids = [obj.properties['item_id'] for obj in response.objects]
-                
-                # Store results
-                all_results.append({
-                    'query': query,
-                    'retrieved_ids': retrieved_ids,
-                    'query_time': query_time
-                })
-                
-            except Exception as e:
-                print_error(f"Query failed: {e}")
-                all_results.append({
-                    'query': query,
-                    'retrieved_ids': [],
-                    'query_time': 0
-                })
+        # Retrieve similar items
+        retrieved_uuids, query_time = near_modality(client, collection_name, query.uuid, target_modality, limit=k)
+        query_times.append(query_time)
         
         # Calculate metrics
-        metrics = self.calculate_metrics(all_results, k_values)
-        
-        # Add timing information
-        metrics['avg_query_time'] = np.mean(query_times) if query_times else 0
-        metrics['total_queries'] = len(self.ground_truth_queries)
-        
-        return metrics, all_results
+        precisions.append(calculate_precision_at_k(relevant_uuids, retrieved_uuids, k))
+        recalls.append(calculate_recall_at_k(relevant_uuids, retrieved_uuids, k))
+        avg_precisions.append(calculate_average_precision(relevant_uuids, retrieved_uuids))
+        hits.append(calculate_hit_at_k(relevant_uuids, retrieved_uuids, k))
     
-    def calculate_metrics(self, results: List[Dict], k_values: List[int]) -> Dict:
-        """Calculate evaluation metrics"""
+    num_queries = len(precisions)
+    if num_queries == 0:
+        return MetricsResult(0.0, 0.0, 0.0, 0.0, 0, 0.0)
+    
+    return MetricsResult(
+        precision_at_k=sum(precisions) / num_queries,
+        recall_at_k=sum(recalls) / num_queries,
+        mean_avg_precision=sum(avg_precisions) / num_queries,
+        hit_rate_at_k=sum(hits) / num_queries,
+        num_queries=num_queries,
+        avg_query_time_ms=sum(query_times) / len(query_times) if query_times else 0.0
+    )
+
+
+def print_retrieval_examples(queries: List[Item], client: weaviate.WeaviateClient,
+                            collection_name: str, target_modality: str, 
+                            k: int = TOP_K, max_examples: int = 3) -> None:
+    """Print example retrievals"""
+    
+    for idx, query in enumerate(queries[:max_examples]):
+        retrieved_uuids, _ = near_modality(client, collection_name, query.uuid, target_modality, limit=k)
         
-        metrics = {
-            'precision_at_k': {},
-            'recall_at_k': {},
-            'hit_rate_at_k': {},
-            'map': 0
+        # Get details of retrieved items
+        collection = client.collections.get(collection_name)
+        
+        header = query.title or query.caption or query.description or ""
+        if query.modality == "text":
+            print(f"\n[TEXT {idx+1}] {header[:80]}...")
+        else:
+            print(f"\n[IMAGE {idx+1}] {header[:80]}...")
+            print(f"  URL: {query.image_url}")
+        
+        for i, uuid in enumerate(retrieved_uuids, 1):
+            try:
+                obj = collection.query.fetch_object_by_id(uuid)
+                if obj:
+                    props = obj.properties
+                    label = props.get("title") or props.get("caption") or ""
+                    handle_match = "✓" if props.get("handle") == query.handle else "✗"
+                    
+                    if target_modality == "image":
+                        print(f"  {i}. {handle_match} [image] {label[:60]}")
+                    else:
+                        print(f"  {i}. {handle_match} [text] {label[:60]}")
+            except Exception:
+                pass
+
+
+def benchmark_collection(client: weaviate.WeaviateClient, collection_name: str, k: int = TOP_K) -> Dict:
+    """Run complete benchmark on a collection"""
+    
+    print(f"\n{'='*80}")
+    print(f"BENCHMARKING: {collection_name}")
+    print(f"{'='*80}")
+    
+    # Load items
+    print(f"\nLoading items from collection...")
+    items = load_all_items(client, collection_name)
+    
+    texts = [it for it in items if (it.modality or "").lower() == "text"]
+    images = [it for it in items if (it.modality or "").lower() == "image"]
+    
+    print(f"✓ Loaded {len(texts)} text items and {len(images)} image items")
+    
+    # Evaluate Text→Image
+    print(f"\n{'-'*80}")
+    print(f"TEXT → IMAGE RETRIEVAL")
+    print(f"{'-'*80}")
+    t2i_metrics = evaluate_retrieval(texts, images, client, collection_name, "image", k=k)
+    
+    print(f"\nResults:")
+    print(f"  Number of queries:      {t2i_metrics.num_queries}")
+    print(f"  Precision@{k}:           {t2i_metrics.precision_at_k:.4f}")
+    print(f"  Recall@{k}:              {t2i_metrics.recall_at_k:.4f}")
+    print(f"  Mean Avg Precision:     {t2i_metrics.mean_avg_precision:.4f}")
+    print(f"  Hit Rate@{k}:            {t2i_metrics.hit_rate_at_k:.4f}")
+    print(f"  Avg Query Time:         {t2i_metrics.avg_query_time_ms:.2f}ms")
+    
+    # Evaluate Image→Text
+    print(f"\n{'-'*80}")
+    print(f"IMAGE → TEXT RETRIEVAL")
+    print(f"{'-'*80}")
+    i2t_metrics = evaluate_retrieval(images, texts, client, collection_name, "text", k=k)
+    
+    print(f"\nResults:")
+    print(f"  Number of queries:      {i2t_metrics.num_queries}")
+    print(f"  Precision@{k}:           {i2t_metrics.precision_at_k:.4f}")
+    print(f"  Recall@{k}:              {i2t_metrics.recall_at_k:.4f}")
+    print(f"  Mean Avg Precision:     {i2t_metrics.mean_avg_precision:.4f}")
+    print(f"  Hit Rate@{k}:            {i2t_metrics.hit_rate_at_k:.4f}")
+    print(f"  Avg Query Time:         {i2t_metrics.avg_query_time_ms:.2f}ms")
+    
+    # Show examples
+    print(f"\n{'-'*80}")
+    print(f"RETRIEVAL EXAMPLES")
+    print(f"{'-'*80}")
+    print(f"\nText → Image (showing top 3 queries, ✓ = correct handle match)")
+    print_retrieval_examples(texts, client, collection_name, "image", k=k, max_examples=3)
+    
+    print(f"\n\nImage → Text (showing top 3 queries, ✓ = correct handle match)")
+    print_retrieval_examples(images, client, collection_name, "text", k=k, max_examples=3)
+    
+    return {
+        "collection": collection_name,
+        "num_texts": len(texts),
+        "num_images": len(images),
+        "text_to_image": {
+            "precision_at_k": t2i_metrics.precision_at_k,
+            "recall_at_k": t2i_metrics.recall_at_k,
+            "mean_avg_precision": t2i_metrics.mean_avg_precision,
+            "hit_rate_at_k": t2i_metrics.hit_rate_at_k,
+            "num_queries": t2i_metrics.num_queries,
+            "avg_query_time_ms": t2i_metrics.avg_query_time_ms
+        },
+        "image_to_text": {
+            "precision_at_k": i2t_metrics.precision_at_k,
+            "recall_at_k": i2t_metrics.recall_at_k,
+            "mean_avg_precision": i2t_metrics.mean_avg_precision,
+            "hit_rate_at_k": i2t_metrics.hit_rate_at_k,
+            "num_queries": i2t_metrics.num_queries,
+            "avg_query_time_ms": i2t_metrics.avg_query_time_ms
         }
-        
-        all_ap = []  # Average Precision for each query
-        
-        for k in k_values:
-            precisions = []
-            recalls = []
-            hits = []
-            
-            for result in results:
-                query = result['query']
-                retrieved = result['retrieved_ids'][:k]
-                relevant = set(query['relevant_ids'])
-                
-                if len(retrieved) == 0:
-                    precisions.append(0)
-                    recalls.append(0)
-                    hits.append(0)
-                    continue
-                
-                # Precision@K
-                true_positives = len([r for r in retrieved if r in relevant])
-                precision = true_positives / len(retrieved) if len(retrieved) > 0 else 0
-                precisions.append(precision)
-                
-                # Recall@K
-                recall = true_positives / len(relevant) if len(relevant) > 0 else 0
-                recalls.append(recall)
-                
-                # Hit Rate@K
-                hit = 1 if true_positives > 0 else 0
-                hits.append(hit)
-            
-            metrics['precision_at_k'][k] = np.mean(precisions) if precisions else 0
-            metrics['recall_at_k'][k] = np.mean(recalls) if recalls else 0
-            metrics['hit_rate_at_k'][k] = np.mean(hits) if hits else 0
-        
-        # Calculate mAP (Mean Average Precision)
-        for result in results:
-            query = result['query']
-            retrieved = result['retrieved_ids']
-            relevant = set(query['relevant_ids'])
-            
-            if len(relevant) == 0:
-                continue
-            
-            # Calculate Average Precision for this query
-            precisions_at_k = []
-            relevant_found = 0
-            
-            for i, item_id in enumerate(retrieved, 1):
-                if item_id in relevant:
-                    relevant_found += 1
-                    precision_at_i = relevant_found / i
-                    precisions_at_k.append(precision_at_i)
-            
-            if len(precisions_at_k) > 0:
-                ap = np.mean(precisions_at_k)
-            else:
-                ap = 0
-            
-            all_ap.append(ap)
-        
-        metrics['map'] = np.mean(all_ap) if all_ap else 0
-        
-        return metrics
+    }
+
+
+def print_comparison(clip_results: Dict, openai_results: Dict, k: int):
+    """Print side-by-side comparison"""
     
-    def print_metrics(self, model_name: str, metrics: Dict):
-        """Print metrics in a formatted way"""
-        print(f"\n{Colors.BOLD}{Colors.MAGENTA}📊 {model_name} Results:{Colors.END}")
-        print(f"{Colors.CYAN}{'─'*70}{Colors.END}")
-        
-        # Precision@K
-        print(f"\n{Colors.BOLD}Precision@K:{Colors.END}")
-        for k, value in metrics['precision_at_k'].items():
-            print(f"  P@{k:2d} = {value:.4f}")
-        
-        # Recall@K
-        print(f"\n{Colors.BOLD}Recall@K:{Colors.END}")
-        for k, value in metrics['recall_at_k'].items():
-            print(f"  R@{k:2d} = {value:.4f}")
-        
-        # Hit Rate@K
-        print(f"\n{Colors.BOLD}Hit Rate@K:{Colors.END}")
-        for k, value in metrics['hit_rate_at_k'].items():
-            print(f"  HR@{k:2d} = {value:.4f}")
-        
-        # mAP
-        print(f"\n{Colors.BOLD}Mean Average Precision (mAP):{Colors.END}")
-        print(f"  mAP = {metrics['map']:.4f}")
-        
-        # Timing
-        print(f"\n{Colors.BOLD}Performance:{Colors.END}")
-        print(f"  Avg Query Time: {metrics['avg_query_time']*1000:.2f} ms")
-        print(f"  Total Queries: {metrics['total_queries']}")
+    print(f"\n\n{'='*80}")
+    print(f"COMPARISON SUMMARY (K={k})")
+    print(f"{'='*80}\n")
     
-    def compare_models(self, clip_metrics: Dict, openai_metrics: Dict):
-        """Compare two models side by side"""
-        print_header("Model Comparison")
-        
-        # Create comparison table
-        print(f"\n{Colors.BOLD}{'Metric':<25} {'CLIP':<15} {'OpenAI':<15} {'Winner':<15}{Colors.END}")
-        print(f"{Colors.CYAN}{'─'*70}{Colors.END}")
-        
-        # Compare Precision@K
-        for k in sorted(clip_metrics['precision_at_k'].keys()):
-            clip_val = clip_metrics['precision_at_k'][k]
-            openai_val = openai_metrics['precision_at_k'][k]
-            winner = "CLIP" if clip_val > openai_val else "OpenAI" if openai_val > clip_val else "Tie"
-            winner_color = Colors.GREEN if winner != "Tie" else Colors.YELLOW
-            
-            print(f"Precision@{k:<2d}            {clip_val:<15.4f} {openai_val:<15.4f} {winner_color}{winner}{Colors.END}")
-        
-        # Compare Recall@K
-        for k in sorted(clip_metrics['recall_at_k'].keys()):
-            clip_val = clip_metrics['recall_at_k'][k]
-            openai_val = openai_metrics['recall_at_k'][k]
-            winner = "CLIP" if clip_val > openai_val else "OpenAI" if openai_val > clip_val else "Tie"
-            winner_color = Colors.GREEN if winner != "Tie" else Colors.YELLOW
-            
-            print(f"Recall@{k:<2d}               {clip_val:<15.4f} {openai_val:<15.4f} {winner_color}{winner}{Colors.END}")
-        
-        # Compare Hit Rate@K
-        for k in sorted(clip_metrics['hit_rate_at_k'].keys()):
-            clip_val = clip_metrics['hit_rate_at_k'][k]
-            openai_val = openai_metrics['hit_rate_at_k'][k]
-            winner = "CLIP" if clip_val > openai_val else "OpenAI" if openai_val > clip_val else "Tie"
-            winner_color = Colors.GREEN if winner != "Tie" else Colors.YELLOW
-            
-            print(f"Hit Rate@{k:<2d}            {clip_val:<15.4f} {openai_val:<15.4f} {winner_color}{winner}{Colors.END}")
-        
-        # Compare mAP
-        clip_map = clip_metrics['map']
-        openai_map = openai_metrics['map']
-        winner = "CLIP" if clip_map > openai_map else "OpenAI" if openai_map > clip_map else "Tie"
-        winner_color = Colors.GREEN if winner != "Tie" else Colors.YELLOW
-        print(f"mAP                      {clip_map:<15.4f} {openai_map:<15.4f} {winner_color}{winner}{Colors.END}")
-        
-        # Compare query time
-        clip_time = clip_metrics['avg_query_time'] * 1000
-        openai_time = openai_metrics['avg_query_time'] * 1000
-        winner = "CLIP" if clip_time < openai_time else "OpenAI" if openai_time < clip_time else "Tie"
-        winner_color = Colors.GREEN if winner != "Tie" else Colors.YELLOW
-        print(f"Avg Query Time (ms)      {clip_time:<15.2f} {openai_time:<15.2f} {winner_color}{winner}{Colors.END}")
+    print(f"{'Metric':<30} {'CLIP':>15} {'OpenAI':>15} {'Winner':>15}")
+    print(f"{'-'*77}")
     
-    def save_results(self, clip_metrics: Dict, openai_metrics: Dict, clip_results: List, openai_results: List, output_file="benchmark_results.json"):
-        """Save benchmark results to file"""
-        print_info(f"Saving results to {output_file}...")
-        
-        results = {
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'dataset_size': len(self.dataset),
-            'num_queries': len(self.ground_truth_queries),
-            'clip': {
-                'metrics': clip_metrics,
-                'collection_name': 'MultimodalCLIP'
-            },
-            'openai': {
-                'metrics': openai_metrics,
-                'collection_name': 'MultimodalOpenAI'
-            }
-        }
-        
-        with open(output_file, 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        print_success(f"Results saved to {output_file}")
+    # Text→Image metrics
+    print(f"\nTEXT → IMAGE:")
+    metrics = [
+        ("Precision@K", "precision_at_k"),
+        ("Recall@K", "recall_at_k"),
+        ("Mean Avg Precision", "mean_avg_precision"),
+        ("Hit Rate@K", "hit_rate_at_k"),
+        ("Avg Query Time (ms)", "avg_query_time_ms")
+    ]
     
-    def cleanup(self):
-        """Close connection"""
-        if self.client:
-            self.client.close()
-            print_info("Disconnected from Weaviate")
+    for name, key in metrics:
+        clip_val = clip_results["text_to_image"][key]
+        openai_val = openai_results["text_to_image"][key]
+        
+        if key == "avg_query_time_ms":
+            winner = "CLIP" if clip_val < openai_val else "OpenAI"
+            print(f"  {name:<28} {clip_val:>15.2f} {openai_val:>15.2f} {winner:>15}")
+        else:
+            winner = "CLIP" if clip_val > openai_val else "OpenAI"
+            print(f"  {name:<28} {clip_val:>15.4f} {openai_val:>15.4f} {winner:>15}")
+    
+    # Image→Text metrics
+    print(f"\nIMAGE → TEXT:")
+    for name, key in metrics:
+        clip_val = clip_results["image_to_text"][key]
+        openai_val = openai_results["image_to_text"][key]
+        
+        if key == "avg_query_time_ms":
+            winner = "CLIP" if clip_val < openai_val else "OpenAI"
+            print(f"  {name:<28} {clip_val:>15.2f} {openai_val:>15.2f} {winner:>15}")
+        else:
+            winner = "CLIP" if clip_val > openai_val else "OpenAI"
+            print(f"  {name:<28} {clip_val:>15.4f} {openai_val:>15.4f} {winner:>15}")
+    
+    print(f"\n{'='*80}\n")
 
 
 def main():
-    """Main benchmark execution"""
+    """Main execution"""
+    import argparse
     
-    print_header("Multimodal Embedding Benchmark: CLIP vs OpenAI")
-    print_info("Evaluating Precision@K, Recall@K, mAP, Hit Rate@K\n")
+    parser = argparse.ArgumentParser(description="Benchmark CLIP vs OpenAI multimodal retrieval")
+    parser.add_argument("--k", type=int, default=5, help="Top-K for evaluation")
+    parser.add_argument("--output", type=str, default="benchmark_results.json", help="Output JSON file")
+    args = parser.parse_args()
     
-    # Initialize benchmark
-    benchmark = MultimodalBenchmark()
+    print("="*80)
+    print("MULTIMODAL RETRIEVAL BENCHMARK")
+    print("CLIP vs OpenAI")
+    print("="*80)
+    
+    # Connect to Weaviate
+    print(f"\nConnecting to Weaviate...")
+    client = weaviate.connect_to_local(
+        host="localhost",
+        port=8080,
+        grpc_port=50051,
+        headers={"X-OpenAI-Api-Key": os.getenv("OPENAI_API_KEY")}
+    )
     
     try:
-        # Connect to Weaviate
-        benchmark.connect()
+        if not client.is_ready():
+            print("✗ Weaviate is not ready!")
+            sys.exit(1)
+        print("✓ Connected")
         
-        # Load dataset
-        dataset_csv = "synthetic_data/synthetic_dataset.csv"
-        queries_csv = "synthetic_data/ground_truth_queries.csv"
+        # Check collections exist
+        clip_collection = "MyrityProducts_CLIP"
+        openai_collection = "MyrityProducts_OpenAI"
         
-        if not os.path.exists(dataset_csv):
-            print_error(f"Dataset not found: {dataset_csv}")
-            print_info("Please run: python generate_synthetic_dataset.py")
+        if not client.collections.exists(clip_collection):
+            print(f"\n✗ Collection '{clip_collection}' not found!")
+            print(f"  Run: python load_clip_collection.py")
             sys.exit(1)
         
-        benchmark.load_dataset(dataset_csv)
-        benchmark.load_ground_truth(queries_csv)
+        if not client.collections.exists(openai_collection):
+            print(f"\n✗ Collection '{openai_collection}' not found!")
+            print(f"  Run: python load_openai_collection.py")
+            sys.exit(1)
         
-        # K values for evaluation
-        k_values = [1, 3, 5, 10]
+        # Benchmark both collections
+        clip_results = benchmark_collection(client, clip_collection, k=args.k)
+        openai_results = benchmark_collection(client, openai_collection, k=args.k)
         
-        # ============ CLIP Benchmark ============
-        print_header("Phase 1: CLIP Multimodal Embeddings")
+        # Print comparison
+        print_comparison(clip_results, openai_results, args.k)
         
-        benchmark.create_collection_clip("MultimodalCLIP")
-        benchmark.insert_data_clip("MultimodalCLIP")
+        # Save results
+        results = {
+            "k": args.k,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "clip": clip_results,
+            "openai": openai_results
+        }
         
-        # Wait for indexing
-        print_info("Waiting for CLIP indexing (3 seconds)...")
-        time.sleep(3)
+        with open(args.output, 'w') as f:
+            json.dump(results, f, indent=2)
         
-        clip_metrics, clip_results = benchmark.search_and_evaluate("MultimodalCLIP", k_values)
-        benchmark.print_metrics("CLIP (multi2vec-clip)", clip_metrics)
+        print(f"✓ Results saved to {args.output}")
         
-        # ============ OpenAI Benchmark ============
-        print_header("Phase 2: OpenAI Text Embeddings")
-        
-        benchmark.create_collection_openai("MultimodalOpenAI")
-        benchmark.insert_data_openai("MultimodalOpenAI")
-        
-        # Wait for indexing
-        print_info("Waiting for OpenAI indexing (3 seconds)...")
-        time.sleep(3)
-        
-        openai_metrics, openai_results = benchmark.search_and_evaluate("MultimodalOpenAI", k_values)
-        benchmark.print_metrics("OpenAI (text-embedding-3-small)", openai_metrics)
-        
-        # ============ Comparison ============
-        benchmark.compare_models(clip_metrics, openai_metrics)
-        
-        # ============ Save Results ============
-        benchmark.save_results(clip_metrics, openai_metrics, clip_results, openai_results)
-        
-        print_header("Benchmark Complete!")
-        print_success("All evaluations finished successfully")
-        
-        # Print summary
-        print(f"\n{Colors.BOLD}Summary:{Colors.END}")
-        print(f"  Dataset Size: {len(benchmark.dataset)} items")
-        print(f"  Ground Truth Queries: {len(benchmark.ground_truth_queries)}")
-        print(f"  K Values Tested: {k_values}")
-        print(f"  Results saved to: benchmark_results.json")
-        
-    except KeyboardInterrupt:
-        print_warning("\nBenchmark interrupted by user")
-        sys.exit(1)
     except Exception as e:
-        print_error(f"Benchmark failed: {str(e)}")
+        print(f"\n✗ Error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
     finally:
-        benchmark.cleanup()
+        client.close()
 
 
 if __name__ == "__main__":
     main()
-
 
