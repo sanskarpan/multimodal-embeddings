@@ -1,0 +1,22 @@
+{
+  "CLIP": {
+    "precision_at_k": 0.982,
+    "recall_at_k": 0.010544130196405934,
+    "mean_avg_precision": 0.010349089361178183,
+    "hit_rate_at_k": 1.0,
+    "mrr": 1.0,
+    "num_queries": 100,
+    "avg_query_time_ms": 4.773176639864687
+  },
+  "OpenAI": {
+    "precision_at_k": 0.98,
+    "recall_at_k": 0.012053085697210277,
+    "mean_avg_precision": 0.011683716327840907,
+    "hit_rate_at_k": 0.99,
+    "mrr": 0.9833333333333333,
+    "num_queries": 100,
+    "avg_query_time_ms": 2.619929558422882
+  },
+  "k": 5,
+  "note": "Unified multimodal embeddings (single object with text + image)"
+}
