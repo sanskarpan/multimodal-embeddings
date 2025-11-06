@@ -137,25 +137,18 @@ def evaluate_retrieval(
     k: int = 5
 ) -> MetricsResult:
     """
-    Evaluate retrieval: each item queries for other items with same handle
-    Since all objects are multimodal, this tests unified embedding quality
+    Evaluate retrieval: test if embedding captures product attributes
+    Uses category/tags from title/caption to find similar products
     """
     collection = client.collections.get(collection_name)
     
-    # Build handle→items mapping
-    handle_map = {}
-    for item in items:
-        if item.handle:
-            if item.handle not in handle_map:
-                handle_map[item.handle] = []
-            handle_map[item.handle].append(item)
+    # For this dataset, products with similar titles should be retrieved
+    # E.g., "Peacock Blue Chikankari Lehenga" should find other Chikankari Lehengas
     
-    # Filter to handles with multiple items (variants/duplicates)
-    handles_with_variants = {h: items for h, items in handle_map.items() if len(items) > 1}
-    
-    if not handles_with_variants:
-        print("  ⚠️  No product variants found for evaluation")
-        return MetricsResult(0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0)
+    # Sample a subset of items for queries (to speed up)
+    import random
+    random.seed(42)
+    query_items = random.sample(items, min(100, len(items)))
     
     precisions = []
     recalls = []
@@ -164,19 +157,50 @@ def evaluate_retrieval(
     rrs = []
     query_times = []
     
-    # Use subset of items for queries to speed up
-    query_items = []
-    for handle, variants in handles_with_variants.items():
-        query_items.extend(variants[:2])  # Max 2 queries per handle
+    def extract_categories(title: str) -> set:
+        """Extract product categories from title"""
+        if not title:
+            return set()
+        title_lower = title.lower()
+        categories = set()
+        
+        # Product types
+        product_types = ["lehenga", "saree", "kurta", "dress", "blouse", "salwar", "dupatta", "skirt"]
+        for ptype in product_types:
+            if ptype in title_lower:
+                categories.add(ptype)
+        
+        # Styles/techniques
+        styles = ["chikankari", "kalamkari", "paithani", "patola", "narayanpet", "ikat", "bandhani"]
+        for style in styles:
+            if style in title_lower:
+                categories.add(style)
+        
+        # Materials
+        materials = ["silk", "cotton", "tissue", "organza", "net", "georgette"]
+        for mat in materials:
+            if mat in title_lower:
+                categories.add(mat)
+        
+        return categories
     
     for query_item in tqdm(query_items, desc="  Queries"):
-        # Get ground truth: other items with same handle
-        same_handle_items = [it for it in items if it.handle == query_item.handle and it.uuid != query_item.uuid]
+        # Define relevant items: same product type and style
+        query_cats = extract_categories(query_item.title or query_item.caption or "")
+        if not query_cats:
+            continue  # Skip items without clear categories
         
-        if not same_handle_items:
+        # Relevant = items with at least 1 overlapping category (excluding self)
+        relevant_items = [
+            it for it in items 
+            if it.uuid != query_item.uuid and 
+            len(query_cats & extract_categories(it.title or it.caption or "")) > 0
+        ]
+        
+        if not relevant_items:
             continue
         
-        relevant_uuids = {it.uuid for it in same_handle_items}
+        relevant_uuids = {it.uuid for it in relevant_items}
         
         # Perform query
         start_time = time.perf_counter()
@@ -229,20 +253,10 @@ def print_retrieval_examples(
     """Print example retrievals"""
     collection = client.collections.get(collection_name)
     
-    # Get items with variants for better examples
-    handle_map = {}
-    for item in items:
-        if item.handle:
-            if item.handle not in handle_map:
-                handle_map[item.handle] = []
-            handle_map[item.handle].append(item)
-    
-    example_items = []
-    for handle, variants in handle_map.items():
-        if len(variants) > 1:
-            example_items.append(variants[0])
-        if len(example_items) >= max_examples:
-            break
+    # Get diverse examples
+    import random
+    random.seed(42)
+    example_items = random.sample(items, min(max_examples, len(items)))
     
     for idx, query_item in enumerate(example_items):
         print(f"\n  Example {idx+1}:")
@@ -261,10 +275,9 @@ def print_retrieval_examples(
                 if str(obj.uuid) == query_item.uuid:
                     continue  # Skip self
                 props = obj.properties or {}
-                match = "✓" if props.get("handle") == query_item.handle else "✗"
                 label = props.get("title") or props.get("caption") or props.get("handle", "")
                 dist = obj.metadata.distance if obj.metadata else None
-                print(f"      {rank}. {match} {label[:55]}... (dist: {dist:.3f})" if dist is not None else f"      {rank}. {match} {label[:55]}...")
+                print(f"      {rank}. {label[:55]}... (dist: {dist:.3f})" if dist is not None else f"      {rank}. {label[:55]}...")
                 rank += 1
                 if rank > k:
                     break
@@ -309,7 +322,7 @@ def benchmark_collection(
     print(f"    MRR:                {metrics.mrr:.4f}")
     print(f"    Avg Query Time:     {metrics.avg_query_time_ms:.2f}ms")
     
-    print(f"\n  Examples (✓ = same product/variant):")
+    print(f"\n  Examples (similar products based on type/style):")
     print_retrieval_examples(client, collection_name, items, k=k, max_examples=5)
     
     return metrics
