@@ -166,3 +166,4 @@ if __name__ == "__main__":
         print(f"   Images: {len(p.image_urls)}")
         print(f"   Tags: {', '.join(p.tags[:5])}")
 
+
